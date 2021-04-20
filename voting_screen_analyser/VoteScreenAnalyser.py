@@ -1,7 +1,6 @@
 import json
 import cv2
-import os
-import re
+import numpy as np
 
 
 class VoteScreen:
@@ -10,6 +9,17 @@ class VoteScreen:
         self.comparators = json.load(open("colours.json", "r"))
         self.full_image = image
         self.segments = self.segment_image()
+        colours = {}
+        for pic_type in self.comparators["owner_colour"].keys():
+            colours[pic_type] = np.array(
+                [[510, 510, 510]] + [col[:3] for col in self.comparators["owner_colour"][pic_type].values()]
+            )
+        self.colours = colours
+        self.colour_names = list(self.comparators["owner_colour"]["rapa"].keys())
+        self.summary = {
+            "rows": self.analyse_all_rows(),
+            "skips": self.analyse_skip_votes()
+        }
 
     def segment_image(self):
         full = self.full_image
@@ -24,45 +34,103 @@ class VoteScreen:
                 "full_row": row,
                 "owner": owner,
                 "reporter": reporter,
-                "votes": votes,
-                "vote_players": vote_players
+                "votes": vote_players
             })
         skip_votes = self.get_sub_image(full, "skip_votes")
         skip_players = [self.get_sub_image(skip_votes, location=vp_loc) for vp_loc in self.locations["votes_players"]]
         return {
             "full_image": full,
             "grid_rows": rows,
-            "skip_votes": skip_votes,
-            "skip_players": skip_players
+            "skip_votes": skip_players
         }
 
-    def get_reporter(self):
-        reporter_segments = [row["reporter"] for row in self.segments["grid_rows"]]
-        for i in range(len(reporter_segments)):
-            rep_seg = reporter_segments[i]
-            sample_img = self.get_sub_image(rep_seg, "reporter_check")
-            sample = self.get_colour_sample(sample_img)
-            result = self.evaluate_sample(sample, "reporter")
-            print(str(sample) + "  --> " + str(result))
-            if result:
-                return i
+    def analyse_skip_votes(self):
+        # check if recorder is alive
+        ra = self.is_recorder_alive()
+        ra_str = "ra" if ra else "rd"
 
-    @staticmethod
-    def print_segments(segments, filename="segments/"):
-        for key, value in segments.items():
-            print(key + " " + str(type(value)))
-            if type(value) == dict:
-                VoteScreen.print_segments(value, filename + "_" + key)
-            elif type(value) == list:
-                for i in range(len(value)):
-                    if type(value[i]) == dict:
-                        VoteScreen.print_segments(value[i], filename + "_" + key + "-" + str(i))
-                    else:
-                        pass
-                        # cv2.imwrite(filename + "_" + key + "_" + str(i) + ".jpg", value[i])
-            else:
-                if key in ["reporter"]:
-                    cv2.imwrite(filename + "_" + key + ".jpg", value)
+        # get skip votes
+        votes = []
+        for vote_img in self.segments["skip_votes"]:
+            col_counts = self.count_colour_pixels(vote_img, self.colours[ra_str + "pa"])
+            max_pixels = np.max(col_counts)
+            if max_pixels == 0:
+                break
+            col_ind = np.argmax(col_counts)
+            col_name = self.colour_names[col_ind]
+            votes.append(col_name)
+
+        return votes
+
+    def analyse_all_rows(self):
+        # check if recorder is alive
+        ra = self.is_recorder_alive()
+        ra_str = "ra" if ra else "rd"
+
+        rows_info = []
+
+        # for each row
+        rows = self.segments["grid_rows"]
+        for row_num in range(10):
+            # TODO: check if the row contains a player
+            player_present_sample = self.get_colour_sample(rows[row_num]["full_row"])
+            present = self.evaluate_sample(player_present_sample, "player_present")
+            if not present:
+                break
+
+            # check if player was the reporter
+            reporter = self.is_reporter(rows[row_num])
+
+            # check if player is alive
+            alive_check_segment = self.get_sub_image(rows[row_num]["full_row"], "alive_check")
+            alive_check_sample = self.get_colour_sample(alive_check_segment)
+            alive = self.evaluate_sample(alive_check_sample, "alive")
+            pa_str = "pa" if alive else "pd"
+
+            # get player colour
+            player_image = rows[row_num]["owner"]
+            image_type = ra_str + pa_str
+            segment_location = self.locations["owner_colour_check"][image_type]
+            segment = self.get_sub_image(player_image, location=segment_location)
+            col_counts = self.count_colour_pixels(segment, self.colours[image_type], 25)
+            # if recorder is dead and this is row 9 (index 8) adjust for the additional
+            # black and brown from screen crack
+            if not ra and row_num == 8:
+                col_counts[0] -= 68
+                col_counts[2] -= 38
+            owner_col = self.colour_names[np.argmax(col_counts)]
+
+            # get votes for the player
+            votes = []
+            if alive:
+                for vote_img in rows[row_num]["votes"]:
+                    col_counts = self.count_colour_pixels(vote_img, self.colours[ra_str + "pa"])
+                    max_pixels = np.max(col_counts)
+                    col_ind = np.argmax(col_counts)
+                    col_name = self.colour_names[col_ind]
+                    if max_pixels > 0:
+                        votes.append(col_name)
+
+            # summarise info
+            rows_info.append({
+                "colour": owner_col,
+                "reporter": reporter,
+                "alive": alive,
+                "votes_for": votes
+            })
+
+        return rows_info
+
+    def is_recorder_alive(self):
+        ra_segment = self.get_sub_image(self.full_image, "recorder_alive_check")
+        return self.evaluate_sample(self.get_colour_sample(ra_segment), "recorder_alive")
+
+    def is_reporter(self, row_dict):
+        rep_seg = row_dict["reporter"]
+        sample_img = self.get_sub_image(rep_seg, "reporter_check")
+        sample = self.get_colour_sample(sample_img)
+        print(sample)
+        return self.evaluate_sample(sample, "reporter")
 
     def get_sub_image(self, image, location_name=None, location=None):
         if location is None:
@@ -84,30 +152,16 @@ class VoteScreen:
             return True
 
     @staticmethod
-    def print_composite(folder, filename_pattern, outfile):
-        images = []
-        for file in os.listdir(folder):
-            if re.match(filename_pattern, file):
-                images.append(cv2.imread(os.path.join(folder, file)))
+    def count_colour_pixels(image, colours, var=10):
+        # takes image input and an n by 3 array of colours
 
-        composite_max = images[0]
-        composite_avg = images[0] / len(images)
-        composite_min = images[0]
-        for i in range(1, len(images)):
-            composite_max = cv2.max(composite_max, images[i])
-            composite_avg += images[i] / len(images)
-            composite_min = cv2.min(composite_min, images[i])
-
-        cv2.imwrite(outfile + "_max.jpg", composite_max)
-        cv2.imwrite(outfile + "_avg.jpg", composite_avg)
-        cv2.imwrite(outfile + "_min.jpg", composite_min)
-
-
-if __name__ == '__main__':
-    full_image = cv2.imread(r"F:\Videos\Among Us\Apr-03\round_1\round_1_meeting_end_2.jpg")
-    vs = VoteScreen(full_image)
-    print(vs.get_reporter())
-    # vs.print_segments(vs.segments)
-    # vs.print_composite(r"C:\Users\Ben\PycharmProjects\AmongUs\voting_screen_analyser\segments",
-    #                    r"_grid_rows-[0-9]_full_row.jpg",
-    #                    "rows_composite")
+        # calculate the distance from each pixel to each colour
+        pdist = np.linalg.norm(image[:, :, None] - colours[None, None, :], axis=3)
+        # set the first colour option to the minimum allowed distance to become the default colour
+        pdist[:, :, 0] = var
+        colours[0] = [255, 255, 255]
+        # find the index of the minimum distance colour for each pixel
+        pal_img = np.argmin(pdist, axis=2)
+        # find how many pixels match each colour definition
+        col_counts = [np.sum(pal_img == i) for i in range(1, len(colours))]
+        return col_counts
