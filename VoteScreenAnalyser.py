@@ -72,7 +72,7 @@ class VoteScreen:
         # for each row
         rows = self.segments["grid_rows"]
         for row_num in range(10):
-            # TODO: check if the row contains a player
+            # check if the row contains a player
             player_present_sample = self.get_colour_sample(rows[row_num]["full_row"])
             present = self.evaluate_sample(player_present_sample, "player_present")
             if not present:
@@ -108,7 +108,8 @@ class VoteScreen:
                     max_pixels = np.max(col_counts)
                     col_ind = np.argmax(col_counts)
                     col_name = self.colour_names[col_ind]
-                    if max_pixels > 0:
+                    # threshold to avoid black coming up from the mouse or a random line
+                    if max_pixels > 30:
                         votes.append(col_name)
 
             # summarise info
@@ -129,7 +130,6 @@ class VoteScreen:
         rep_seg = row_dict["reporter"]
         sample_img = self.get_sub_image(rep_seg, "reporter_check")
         sample = self.get_colour_sample(sample_img)
-        print(sample)
         return self.evaluate_sample(sample, "reporter")
 
     def get_sub_image(self, image, location_name=None, location=None):
@@ -139,7 +139,6 @@ class VoteScreen:
 
     @staticmethod
     def get_colour_sample(image):
-        # cv2.imwrite("temp.jpg", image)
         mean, std = cv2.meanStdDev(image)
         return [val[0] for val in mean] + [val[0] for val in std]
 
@@ -165,3 +164,11 @@ class VoteScreen:
         # find how many pixels match each colour definition
         col_counts = [np.sum(pal_img == i) for i in range(1, len(colours))]
         return col_counts
+
+# debugging code
+
+# print(sample)
+# print(self.evaluate_sample(sample, "reporter"))
+# cv2.imshow("reporter_check", sample_img)
+# cv2.waitKey(0)
+# cv2.destroyAllWindows()

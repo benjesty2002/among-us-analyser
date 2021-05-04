@@ -2,7 +2,7 @@
   "reporter": {
     "type": "match",
     "expectation": [0, 0, 0, 20, 20, 30],
-    "tolerance": [255, 255, 255, 10, 10, 10]
+    "tolerance": [255, 255, 255, 13, 13, 13]
   },
   "player_present": {
     "type": "match",
@@ -12,7 +12,7 @@
   "alive": {
     "type": "match",
     "expectation": [255.0, 255.0, 255.0, 0.0, 0.0, 0.0],
-    "tolerance": [55, 55, 55, 2, 2, 2]
+    "tolerance": [55, 55, 55, 255, 255, 255]
   },
   "recorder_alive": {
     "type": "match",

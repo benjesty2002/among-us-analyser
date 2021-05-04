@@ -7,8 +7,8 @@ import numpy as np
 
 class VoteScreen:
     def __init__(self, image):
-        self.locations = json.load(open("vote_screen_locations.json", "r"))
-        self.comparators = json.load(open("colours.json", "r"))
+        self.locations = json.load(open("../vote_screen_locations.json", "r"))
+        self.comparators = json.load(open("../colours.json", "r"))
         self.full_image = image
         self.segments = self.segment_image()
         colours = {}

@@ -3,24 +3,29 @@ from datetime import date
 import json
 import os
 
+import DataFormatter
+from VoteScreenAnalyser import VoteScreen
+
 
 class SceneExtractor:
     def __init__(self, round_num, date_str=None):
         if date_str is None:
             date_str = date.today().strftime("%b-%d")
-        self.date_str = date_str
-        self.round = round_num
-        self.src_folder = "F:/Videos/Among Us/{d}/".format(d=date_str)
-        self.dest_folder = self.src_folder + "round_{}/".format(round_num)
-        self.src_filename = "Among_Us_{d} ({r})".format(d=date_str, r=round_num)
-        self.vidcap = cv2.VideoCapture(self.src_folder + self.src_filename + ".mp4")
-        self.meetings = []
-        self.general_round_info = {
-            "version": "1.0.0",
-            "round_start": 0,
-            "round_end": None,
-            "meetings": []
+        src_folder = "F:/Videos/Among Us/{d}/".format(d=date_str)
+        dest_folder = src_folder + "round_{}/".format(round_num)
+        if not os.path.exists(dest_folder):
+            os.mkdir(dest_folder)
+        src_filename = "Among_Us_{d} ({r}).mp4".format(d=date_str, r=round_num)
+        self.vidcap = cv2.VideoCapture(src_folder + src_filename)
+        self.file_paths = {
+            "timestamps": dest_folder + "timestamps.json",
+            "meeting_screenshots": dest_folder + "meeting_{}.bmp",
+            "meeting_raw_data": dest_folder + "meetings.json",
+            "round_start": dest_folder + "round_start.bmp",
+            "round_end": dest_folder + "round_end.bmp",
+            "summary": dest_folder + "summary.json"
         }
+        self.version = "1.1.0"
 
     @staticmethod
     def array_3_match(arr1, arr2, tol):
@@ -125,10 +130,17 @@ class SceneExtractor:
             raise RuntimeError("end of stream")
         return image
 
+    def check_existing_file_version(self, file_path):
+        if not os.path.exists(file_path):
+            return False, None
+        if file_path[-4:] == ".bmp":
+            return True, None
+        json_data = json.load(open(file_path, "r"))
+        return json_data.get("version") == self.version, json_data
+
     def find_meeting_timestamps(self):
         print("searching for meetings")
-        if len(self.meetings) > 0:
-            return self.meetings
+
         blind_step = 15000
         low = 0
         low_meeting = False
@@ -149,36 +161,19 @@ class SceneExtractor:
                 try:
                     high_meeting = self.is_meeting(timestamp=high)
                 except RuntimeError:
-                    self.meetings = meetings
+                    # end of video hit
                     return meetings
 
-            # print("transition found between {} and {}, narrowing search".format(low, high))
-            # low is now not a meeting but high is, use binary search to hone in
+            # low is now not a meeting but high is, or vice versa, use binary search to hone in
             low, high = self.timestamp_binary_search(self.is_meeting, low, high, 1000)
-            # while high - low > 1:
-            #     mid = (high + low) / 2
-            #     mid_meeting = self.is_meeting(timestamp=mid)
-            #     if mid_meeting == low_meeting:
-            #         # print(">= {}".format(mid))
-            #         low = mid
-            #     else:
-            #         # print("<= {}".format(mid))
-            #         high = mid
 
-            # print("transition is between {} and {}".format(low, high))
             if high_meeting:
                 # this is the start of the meeting
                 meeting_num += 1
                 meeting_details = {
                     "order": meeting_num,
                     "start": high,
-                    "end": None,
-                    "reporter": None,
-                    "alive": [],
-                    "dead": [],
-                    "new_dead": [],
-                    "votes": [],
-                    "result": None
+                    "end": None
                 }
                 print("Meeting {} start: {}".format(meeting_num, self.format_ts(high)))
             else:
@@ -186,21 +181,22 @@ class SceneExtractor:
                 meetings.append(meeting_details.copy())
                 meeting_details = {}
                 print("Meeting {} end: {}".format(meeting_num, self.format_ts(low)))
+                cv2.imwrite(self.file_paths["meeting_screenshots"].format(meeting_num), self.get_screenshot_at(low))
 
             low = high
             low_meeting = high_meeting
 
-    def find_round_start(self):
+    def find_round_start(self, first_meeting_start):
         print("Finding round start time")
         # TODO: do a binary search bounded by 0 and first meeting to leave the dropship. Final dropship ts gives start
         #  time for linear search for start
         lower_bound = 0
-        upper_bound = 3600000
-        if len(self.meetings) > 0:
-            # set upper bound of timestamps to search to the start time of the first meeting
-            upper_bound = self.meetings[0]["start"]
+        if first_meeting_start is None:
+            print("WARNING: no meeting data given so round start search is high-unbounded")
+            upper_bound = 3600000
         else:
-            print("WARNING: no meeting data so round start search is high-unbounded")
+            upper_bound = first_meeting_start
+
         # the search condition for start screen is 3.2 seconds prior to the search timestamp
         ts = lower_bound + 3200
         while not self.is_game_start(ts) and ts <= upper_bound:
@@ -208,8 +204,7 @@ class SceneExtractor:
 
         if not self.is_game_start(ts):
             print("WARNING: start could not be identified, assuming round was already started")
-            self.general_round_info["round_start"] = 0
-            return
+            return None
 
         # get closer to the end of the start screen animation
         if self.is_game_start(ts + 500):
@@ -217,7 +212,8 @@ class SceneExtractor:
         else:
             ts -= 250
 
-        self.general_round_info["round_start"] = ts
+        cv2.imwrite(self.file_paths["round_start"], self.get_screenshot_at(ts))
+        return ts
 
     def get_video_length(self):
         # get number of frames in video & divide by frame rate
@@ -236,16 +232,17 @@ class SceneExtractor:
         mins = int(ts / 60)
         return "{:02d}:{:02d}.{} ({})".format(mins, secs, ms, ts_in)
 
-    def find_round_end(self):
+    def find_round_end(self, final_meeting_end):
         print("searching for round end screen")
         # get the bounds
-        if len(self.meetings) > 0:
-            lower_bound = self.meetings[-1]["end"]
-        else:
+        if final_meeting_end is None:
             print("WARNING: no meeting data available so round end search is bounded only by start/end of video")
             lower_bound = 0
+        else:
+            lower_bound = final_meeting_end
+
         # get video end ts
-        upper_bound = self.get_video_length() - 1000
+        upper_bound = self.get_video_length() - 100
 
         # check lower bound is not in dropship
         while self.is_dropship(lower_bound):
@@ -253,9 +250,11 @@ class SceneExtractor:
             lower_bound += 15000
             if lower_bound >= upper_bound:
                 print("WARNING: could not find a non-dropship frame to start from")
-                self.general_round_info["round_end"] = upper_bound
                 return
 
+        # if I wasn't quick enough stopping the recording, try 15 seconds prior
+        if not self.is_dropship(upper_bound) and self.is_dropship(upper_bound - 15000):
+            upper_bound -= 15000
         # binary search if upper bound is dropship
         if self.is_dropship(upper_bound):
             last_non_dropship, first_dropship = self.timestamp_binary_search(self.is_dropship, lower_bound, upper_bound,
@@ -272,12 +271,12 @@ class SceneExtractor:
         while not self.is_game_end(end_ts):
             end_ts -= 500
             if end_ts < lower_bound:
-                self.general_round_info["round_end"] = upper_bound
                 print("WARNING: Could not find end game")
-                return
+                return None
 
         print("end game found: {}".format(self.format_ts(end_ts)))
-        self.general_round_info["round_end"] = end_ts
+        cv2.imwrite(self.file_paths["round_end"], self.get_screenshot_at(end_ts))
+        return end_ts
 
     @staticmethod
     def timestamp_binary_search(scene_test, ts_low, ts_high, end_precision):
@@ -301,45 +300,155 @@ class SceneExtractor:
 
         return ts_low, ts_high
 
-    def export_round_details(self, write_only=False, overwrite=False):
-        output_json_filename = self.dest_folder + "round_{}_details.json".format(self.round)
-        if (not overwrite) \
-                and os.path.exists(output_json_filename) \
-                and json.load(open(output_json_filename, "r")).get("version") == self.general_round_info["version"]:
-            print("Video from {} round {} has already been analysed with the latest version; skipping".format(
-                self.date_str, self.round
-            ))
-            return
+    def find_timestamps(self, force_recalculate=False):
+        file_path = self.file_paths["timestamps"]
+        if not force_recalculate:
+            latest_version, timestamps = self.check_existing_file_version(file_path)
+            if latest_version:
+                return timestamps
 
-        # calculate
-        if not write_only:
-            print("searching video for key frames")
-            self.find_meeting_timestamps()
-            if len(self.meetings) == 0:
-                print("WARNING: meeting search failed to return any results, skipping round")
-                return
-            self.find_round_start()
-            self.find_round_end()
+        # get start / end times of each meeting
+        meeting_timestamps = self.find_meeting_timestamps()
 
-        # gather
-        combined_info = self.general_round_info.copy()
-        combined_info["meetings"] = self.meetings
+        # get round start / end times
+        if len(meeting_timestamps) > 0:
+            first_meeting_start = meeting_timestamps[0]["start"]
+            final_meeting_end = meeting_timestamps[-1]["end"]
+        else:
+            first_meeting_start = None
+            final_meeting_end = None
+        round_start = self.find_round_start(first_meeting_start)
+        round_end = self.find_round_end(final_meeting_end)
 
-        # export
-        print("exporting details")
-        if not os.path.exists(self.dest_folder):
-            os.mkdir(self.dest_folder)
-        json.dump(combined_info, open(self.dest_folder + "round_{}_details.json".format(self.round), "w+"),
-                  indent=4)
-        # print start screen
-        cv2.imwrite(self.dest_folder + "round_{}_start.jpg".format(self.round),
-                    self.get_screenshot_at(combined_info["round_start"]))
-        # print end screen
-        cv2.imwrite(self.dest_folder + "round_{}_end.jpg".format(self.round),
-                    self.get_screenshot_at(combined_info["round_end"]))
-        # print meeting start / ends. In future starts can be removed but leaving in for now for visual verification
-        for meeting in self.meetings:
-            cv2.imwrite(self.dest_folder + "round_{}_meeting_start_{}.jpg".format(self.round, meeting["order"]),
-                        self.get_screenshot_at(meeting["start"]))
-            cv2.imwrite(self.dest_folder + "round_{}_meeting_end_{}.jpg".format(self.round, meeting["order"]),
-                        self.get_screenshot_at(meeting["end"]))
+        timestamps = {
+            "version": self.version,
+            "round_start": round_start,
+            "round_end": round_end,
+            "meetings": meeting_timestamps
+        }
+        json.dump(timestamps, open(file_path, "w+"), indent=4)
+        return timestamps
+
+    def extract_meeting_data(self, meeting_timestamps, force_recalculate=False):
+        file_path = self.file_paths["meeting_raw_data"]
+        if not force_recalculate:
+            latest_version, meeting_data = self.check_existing_file_version(file_path)
+            if latest_version:
+                return meeting_data["meetings"]
+
+        # get info from individual meetings
+        for meeting in meeting_timestamps:
+            meeting["screenshot_summary"] = VoteScreen(self.get_screenshot_at(meeting["end"])).summary
+
+        meeting_data = {
+            "version": self.version,
+            "meetings": meeting_timestamps
+        }
+        json.dump(meeting_data, open(file_path, "w+"), indent=4)
+        return meeting_timestamps
+
+    def format_data(self, timestamps, meeting_data, force_recalculate=False):
+        file_path = self.file_paths["summary"]
+        if not force_recalculate:
+            latest_version, formatted_data = self.check_existing_file_version(file_path)
+            if latest_version:
+                return formatted_data
+
+        formatted_data = DataFormatter.summarise_data(timestamps["round_start"], timestamps["round_end"], meeting_data)
+        formatted_data["version"] = self.version
+        json.dump(formatted_data, open(file_path, "w+"), indent=4)
+        return formatted_data
+
+    def calculate_all(self, human_input=False, force_recalculate=False):
+        # identify key timestamps
+        timestamps = self.find_timestamps(force_recalculate)
+
+        # get info from individual meetings
+        meeting_data = self.extract_meeting_data(timestamps["meetings"], force_recalculate)
+
+        # combine & format the data
+        formatted_data = self.format_data(timestamps, meeting_data, force_recalculate)
+
+        if human_input:
+            formatted_data = self.add_human_details(formatted_data)
+
+        return formatted_data
+
+    # def export_round_details(self, formatted_data=None, overwrite=False, human_input=False):
+    #     if (not overwrite) \
+    #             and os.path.exists(self.summary_json_filename) \
+    #             and json.load(open(self.summary_json_filename, "r")).get("version") == self.general_round_info[
+    #         "version"]:
+    #         print("Video from {} round {} has already been analysed with the latest version; skipping".format(
+    #             self.date_str, self.round
+    #         ))
+    #         return
+    #
+    #     if formatted_data is None:
+    #         # calculate
+    #         formatted_data = self.calculate_all(human_input)
+    #
+    #     # export
+    #     print("exporting details")
+    #     round_timestamps = formatted_data["raw_timestamps"]
+    #     if not os.path.exists(self.dest_folder):
+    #         os.mkdir(self.dest_folder)
+    #     json.dump(formatted_data, open(self.summary_json_filename, "w+"), indent=4)
+    #     # print start screen
+    #     cv2.imwrite(self.dest_folder + "round_start.bmp", self.get_screenshot_at(round_timestamps["round_start"]))
+    #     # print end screen
+    #     cv2.imwrite(self.dest_folder + "round_end.bmp", self.get_screenshot_at(round_timestamps["round_end"]))
+    #     # print meeting ends
+    #     for meeting in self.meetings:
+    #         meeting_end_image = self.get_screenshot_at(meeting["end"])
+    #         cv2.imwrite(self.dest_folder + "meeting_{}.bmp".format(meeting["order"]), meeting_end_image)
+
+    def add_human_details(self, round_summary=None):
+        # load raw timestamp info
+        timestamps = json.load(open(self.file_paths["timestamps"], "r"))
+        round_start = timestamps["round_start"]
+        if round_start is None:
+            round_start = timestamps["meetings"][0]["end"]
+        round_end = timestamps["round_end"]
+        if round_end is None:
+            round_end = timestamps["meetings"][-1]["end"]
+
+        if round_summary is None:
+            round_summary = json.load(open(self.file_paths["summary"], "r"))
+
+        final_meeting = round_summary["meetings"][-1]
+        alive_after_final_vote = [player for player in final_meeting["alive"] if player != final_meeting["outcome"]]
+
+        # get impostor colours from human
+        cv2.imshow("round_start", self.get_screenshot_at(round_start))
+        cv2.imshow("round_end", self.get_screenshot_at(round_end))
+        cv2.waitKey(0)
+        impostors = input("Which colours were the impostors? ").lower().replace(" ", "").split(",")
+
+        # check if the last vote concluded the game
+        win_condition = None
+        total_alive = len(alive_after_final_vote)
+        impostors_alive = 0
+        if total_alive in [2, 4]:
+            for player in alive_after_final_vote:
+                if player in impostors:
+                    impostors_alive += 1
+            if impostors_alive == (total_alive / 2):
+                win_condition = "impostor_vote"
+            elif impostors_alive == 0:
+                win_condition = "crew_vote"
+
+        # if win condition cannot be determined from the last round & impostors, ask the human
+        if win_condition is None:
+            crew_win = input("Did crew win (Yes/No/Unknown)? ")[0].upper()
+            win_condition = {"Y": "crew_tasks", "N": "impostor_kill", "U": "unknown"}[crew_win]
+
+        cv2.destroyAllWindows()
+
+        # get human input
+        round_summary["impostors"] = impostors
+        round_summary["outcome"] = win_condition
+
+        file_path = self.file_paths["summary"]
+        json.dump(round_summary, open(file_path, "w+"), indent=4)
+        return round_summary
