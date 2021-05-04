@@ -25,7 +25,7 @@ class SceneExtractor:
             "round_end": dest_folder + "round_end.bmp",
             "summary": dest_folder + "summary.json"
         }
-        self.version = "1.1.0"
+        self.version = "1.1.1"
 
     @staticmethod
     def array_3_match(arr1, arr2, tol):

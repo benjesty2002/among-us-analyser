@@ -54,7 +54,7 @@ class VoteScreen:
         for vote_img in self.segments["skip_votes"]:
             col_counts = self.count_colour_pixels(vote_img, self.colours[ra_str + "pa"])
             max_pixels = np.max(col_counts)
-            if max_pixels == 0:
+            if max_pixels < 30:
                 break
             col_ind = np.argmax(col_counts)
             col_name = self.colour_names[col_ind]
@@ -103,14 +103,17 @@ class VoteScreen:
             # get votes for the player
             votes = []
             if alive:
-                for vote_img in rows[row_num]["votes"]:
+                # the 10th vote slot causes issues when reporter is dead. It is unnecessary, so avoid using it
+                max_votes = 10 if ra else 9
+                for vote_img in rows[row_num]["votes"][:max_votes]:
                     col_counts = self.count_colour_pixels(vote_img, self.colours[ra_str + "pa"])
                     max_pixels = np.max(col_counts)
+                    # threshold to avoid black coming up from the mouse or a random line
+                    if max_pixels < 30:
+                        break
                     col_ind = np.argmax(col_counts)
                     col_name = self.colour_names[col_ind]
-                    # threshold to avoid black coming up from the mouse or a random line
-                    if max_pixels > 30:
-                        votes.append(col_name)
+                    votes.append(col_name)
 
             # summarise info
             rows_info.append({
