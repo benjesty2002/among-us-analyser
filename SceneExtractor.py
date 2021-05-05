@@ -23,9 +23,11 @@ class SceneExtractor:
             "meeting_raw_data": dest_folder + "meetings.json",
             "round_start": dest_folder + "round_start.bmp",
             "round_end": dest_folder + "round_end.bmp",
-            "summary": dest_folder + "summary.json"
+            "summary": dest_folder + "summary.json",
+            "human_additions": dest_folder + "human_additions.json"
         }
         self.version = "1.1.1"
+        self.is_stream = False
 
     @staticmethod
     def array_3_match(arr1, arr2, tol):
@@ -61,6 +63,7 @@ class SceneExtractor:
         img = self.get_screenshot_at(timestamp)
         segment = img[bounds[0]:bounds[1], bounds[2]:bounds[3]]
         mean, std = cv2.meanStdDev(segment)
+        # print(str(mean) + "   " + str(std))
         mean_pass = self.array_3_match(mean, expected_mean, mean_tol)
         std_pass = self.array_3_match(std, expected_std, std_tol)
         return mean_pass and std_pass
@@ -74,7 +77,7 @@ class SceneExtractor:
             if self.check_segment(timestamp=timestamp,
                                   bounds=bounds,
                                   expected_mean=[[162.], [150.], [142.]],
-                                  mean_tol=0.1,
+                                  mean_tol=3,
                                   expected_std=[[0.], [0.], [0.]],
                                   std_tol=1):
                 return True
@@ -128,6 +131,17 @@ class SceneExtractor:
         success, image = self.vidcap.read()
         if not success:
             raise RuntimeError("end of stream")
+        if self.is_stream:
+            # scale the image
+            top = 40
+            bottom = 669
+            left = 5
+            right = 1123
+            au_segment = image[top:bottom, left:right]
+            image = cv2.resize(au_segment, (1280, 720), cv2.INTER_AREA)
+            # cv2.imshow("rescaled", image)
+            # cv2.waitKey(0)
+            # cv2.destroyAllWindows()
         return image
 
     def check_existing_file_version(self, file_path):
@@ -244,6 +258,14 @@ class SceneExtractor:
         # get video end ts
         upper_bound = self.get_video_length() - 100
 
+        # step back if the end is out of bounds
+        self.vidcap.set(cv2.CAP_PROP_POS_MSEC, upper_bound)
+        success, image = self.vidcap.read()
+        while not success:
+            upper_bound -= 1000
+            self.vidcap.set(cv2.CAP_PROP_POS_MSEC, upper_bound)
+            success, image = self.vidcap.read()
+
         # check lower bound is not in dropship
         while self.is_dropship(lower_bound):
             # step forward 15 seconds
@@ -309,6 +331,8 @@ class SceneExtractor:
 
         # get start / end times of each meeting
         meeting_timestamps = self.find_meeting_timestamps()
+        if len(meeting_timestamps) == 0:
+            raise RuntimeError("No meetings found")
 
         # get round start / end times
         if len(meeting_timestamps) > 0:
@@ -374,36 +398,21 @@ class SceneExtractor:
 
         return formatted_data
 
-    # def export_round_details(self, formatted_data=None, overwrite=False, human_input=False):
-    #     if (not overwrite) \
-    #             and os.path.exists(self.summary_json_filename) \
-    #             and json.load(open(self.summary_json_filename, "r")).get("version") == self.general_round_info[
-    #         "version"]:
-    #         print("Video from {} round {} has already been analysed with the latest version; skipping".format(
-    #             self.date_str, self.round
-    #         ))
-    #         return
-    #
-    #     if formatted_data is None:
-    #         # calculate
-    #         formatted_data = self.calculate_all(human_input)
-    #
-    #     # export
-    #     print("exporting details")
-    #     round_timestamps = formatted_data["raw_timestamps"]
-    #     if not os.path.exists(self.dest_folder):
-    #         os.mkdir(self.dest_folder)
-    #     json.dump(formatted_data, open(self.summary_json_filename, "w+"), indent=4)
-    #     # print start screen
-    #     cv2.imwrite(self.dest_folder + "round_start.bmp", self.get_screenshot_at(round_timestamps["round_start"]))
-    #     # print end screen
-    #     cv2.imwrite(self.dest_folder + "round_end.bmp", self.get_screenshot_at(round_timestamps["round_end"]))
-    #     # print meeting ends
-    #     for meeting in self.meetings:
-    #         meeting_end_image = self.get_screenshot_at(meeting["end"])
-    #         cv2.imwrite(self.dest_folder + "meeting_{}.bmp".format(meeting["order"]), meeting_end_image)
-
     def add_human_details(self, round_summary=None):
+        # check if responses are already present
+        if os.path.exists(self.file_paths["human_additions"]):
+            human_additions = json.load(open(self.file_paths["human_additions"], "r"))
+            outcome = human_additions.pop("win_condition", None)
+            if outcome is None:
+                crew_win = human_additions["crew_win"]
+            else:
+                crew_win = "Y" if outcome[0] == "c" else "N"
+            impostors = human_additions.get("impostors")
+        else:
+            human_additions = {}
+            crew_win = None
+            impostors = None
+
         # load raw timestamp info
         timestamps = json.load(open(self.file_paths["timestamps"], "r"))
         round_start = timestamps["round_start"]
@@ -416,39 +425,44 @@ class SceneExtractor:
         if round_summary is None:
             round_summary = json.load(open(self.file_paths["summary"], "r"))
 
+        if crew_win is None or impostors is None:
+            cv2.imshow("round_start", self.get_screenshot_at(round_start))
+            cv2.imshow("round_end", self.get_screenshot_at(round_end))
+            cv2.waitKey(0)
+
         final_meeting = round_summary["meetings"][-1]
         alive_after_final_vote = [player for player in final_meeting["alive"] if player != final_meeting["outcome"]]
 
-        # get impostor colours from human
-        cv2.imshow("round_start", self.get_screenshot_at(round_start))
-        cv2.imshow("round_end", self.get_screenshot_at(round_end))
-        cv2.waitKey(0)
-        impostors = input("Which colours were the impostors? ").lower().replace(" ", "").split(",")
+        if impostors is None:
+            # get impostor colours from human
+            impostors = input("Which colours were the impostors? ").lower().replace(" ", "").split(",")
+        human_additions["impostors"] = impostors
 
         # check if the last vote concluded the game
         win_condition = None
         total_alive = len(alive_after_final_vote)
         impostors_alive = 0
-        if total_alive in [2, 4]:
-            for player in alive_after_final_vote:
-                if player in impostors:
-                    impostors_alive += 1
-            if impostors_alive == (total_alive / 2):
-                win_condition = "impostor_vote"
-            elif impostors_alive == 0:
-                win_condition = "crew_vote"
+        for player in alive_after_final_vote:
+            if player in human_additions["impostors"]:
+                impostors_alive += 1
+        if impostors_alive == (total_alive / 2):
+            win_condition = "impostor_vote"
+        elif impostors_alive == 0:
+            win_condition = "crew_vote"
 
         # if win condition cannot be determined from the last round & impostors, ask the human
         if win_condition is None:
-            crew_win = input("Did crew win (Yes/No/Unknown)? ")[0].upper()
+            if crew_win is None:
+                crew_win = input("Did crew win (Yes/No/Unknown)? ")[0].upper()
             win_condition = {"Y": "crew_tasks", "N": "impostor_kill", "U": "unknown"}[crew_win]
+        human_additions["win_condition"] = win_condition
 
         cv2.destroyAllWindows()
 
         # get human input
-        round_summary["impostors"] = impostors
-        round_summary["outcome"] = win_condition
+        round_summary["impostors"] = human_additions["impostors"]
+        round_summary["outcome"] = human_additions["win_condition"]
 
-        file_path = self.file_paths["summary"]
-        json.dump(round_summary, open(file_path, "w+"), indent=4)
+        json.dump(human_additions, open(self.file_paths["human_additions"], "w+"), indent=4)
+        json.dump(round_summary, open(self.file_paths["summary"], "w+"), indent=4)
         return round_summary

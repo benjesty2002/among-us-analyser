@@ -1,0 +1,32 @@
+{
+  "to_do": {
+    "disconnections": {
+      "description": "add a way to identify games where everyone disconnects",
+      "notes": "could check for games which finish before 1st meeting and before a certain time threshold. Could also flag games with no end screen"
+    },
+    "low_player_counts": {
+      "description": "In games with <10 players, the system sometimes erroneously picks up extra players in meetings. Fix this",
+      "notes": "Add a 'player_present' check"
+    }
+  },
+  "done": {
+    "manual_edits": {
+      "description": "add a way to flag that a json file has been manually edited & a way to then avoid overwriting it by default",
+      "notes": "keep record of manual edits in a separate json file & repopulate main file when overwriting"
+    },
+    "player_names": {
+      "description": "add a way to convert player colours to player names for each round",
+      "notes": "could have a dictionary of most likely players for each colour, then program interactively prompts for changes in this round"
+    },
+    "bugfix-crew_vote_win": {
+      "desciption": "if crew vote off impostors it is not always picked up in the human additions function as it only checks on cases of 2 or 4 remaining",
+      "notes": "fix the issue & rectify the ones processed so far. Loop through and find any filled-in human additions, load the impostors, get the winning team from the first half of the win condition & check the type of win from fixed logic"
+    }
+  },
+  "on_hold": {
+    "stream_rounds": {
+      "description": "add a way to analyse video being viewed on a discord stream (i.e. when not playing)",
+      "notes": "Rescale full video / rescale individual frames when picked from video. Probably the latter. Colours change too much to be feasible"
+    }
+  }
+}
