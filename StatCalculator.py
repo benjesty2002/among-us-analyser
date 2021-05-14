@@ -235,16 +235,234 @@ class StatCalculator:
             case_counts[date] = [{"players": round_info["player_list"],
                                   "impostors": round_info["impostors"]}
                                  for round_info in rounds if "error" not in round_info]
+        return case_counts
 
+    def impostor_ratio_win_rates(self):
+        case_counts = defaultdict(lambda: {"impostor_kill": 0, "crew_tasks": 0, "crew_vote": 0, "impostor_vote": 0})
+        for date, rounds in self.combined_summaries.items():
+            for round_info in rounds:
+                if "error" in round_info:
+                    continue
+                impostor_count = len(round_info["impostors"])
+                crew_count = len(round_info["player_list"]) - impostor_count
+                case_counts["{}:{}".format(impostor_count, crew_count)][round_info["outcome"]] += 1
         return case_counts
 
     def breaking_the_law(self):
         # coming soon on Stats With Jesty
         pass
 
+    def voting_on_x(self, total_alive=7, impostors_alive=2):
+        case_counts = defaultdict(lambda: {"correct": 0, "incorrect": 0, "total": 0, "opportunities": 0})
+        for date, games in self.combined_summaries.items():
+            for game in games:
+                if "error" in game:
+                    continue
+                impostors = game["impostors"]
+                for meeting in game["meetings"]:
+                    if total_alive != len(meeting["alive"]):
+                        continue
+                    if impostors_alive is not None and \
+                            impostors_alive != len([player for player in impostors if player in meeting["alive"]]):
+                        continue
+                    for player, vote in meeting["vote_log"].items():
+                        if player not in impostors:
+                            continue
+                        case_counts[player]["opportunities"] += 1
+                        if vote not in ["skip", ""]:
+                            case_counts[player]["total"] += 1
+                            if vote in impostors:
+                                case_counts[player]["correct"] += 1
+                            else:
+                                case_counts[player]["incorrect"] += 1
+        percentages = {
+            player: {
+                **stats,
+                "perc_votes_cast": round(100 * stats["total"] / stats["opportunities"]),
+                "perc_votes_correct": round(100 * stats["correct"] / stats["total"])
+            }
+            for player, stats in case_counts.items() if stats["total"] > 0
+        }
+        percentages = self.order_by_value(percentages, field="perc_votes_cast", keys_only=False)
+        title = "In meetings with {} players alive".format(total_alive)
+        if impostors_alive is not None:
+            title += " {} of whom were impostors".format(impostors_alive)
+        print(title + ":")
+        out_string = "{} voted in {}/{} of meetings ({}%), with {} correct votes ({}%)"
+        for player, stats in percentages.items():
+            print(out_string.format(
+                player, stats["total"], stats["opportunities"], stats["perc_votes_cast"], stats["correct"],
+                stats["perc_votes_correct"]
+            ))
+            out_string = "{}          {}/{}             ({}%),      {}               ({}%)"
+        return case_counts, percentages
+
+    def search_for_round(self, category, data=None):
+        for date, games in self.combined_summaries.items():
+            game_num = 0
+            for game in games:
+                game_num += 1
+                if "error" in game:
+                    continue
+                round_str = "{} round {}".format(date, game_num)
+                if category == "impostor":
+                    impostors = data
+                    impostor_match = True
+                    for player in impostors:
+                        if player not in game["impostors"]:
+                            impostor_match = False
+                    if impostor_match:
+                        print(round_str)
+                elif category == "half_impostor_win":
+                    if len(game["impostors"]) != 2 or game["outcome"][0] != "i":
+                        continue
+                    final_meeting = game["meetings"][-1]
+                    impostors_survived = [player for player in game["impostors"]
+                                          if player in final_meeting["alive"] and player != final_meeting["outcome"]]
+                    if len(impostors_survived) == 1:
+                        round_str += " impostors {}, {} survived".format(str(game["impostors"]), impostors_survived[0])
+                        print(round_str)
+
+    def best_at_dying(self):
+        case_counts = defaultdict(lambda: {"opportunity": 0.0, "score": 0.0})
+        for date, games in self.combined_summaries.items():
+            for game in games:
+                if "error" in game:
+                    continue
+                for meeting in game["meetings"]:
+                    score_round = meeting["outcome"] in game["impostors"]
+                    value = 1 / len(meeting["new_dead"]) if len(meeting["new_dead"]) > 0 else 0.0
+                    for player in meeting["new_dead"]:
+                        case_counts[player]["opportunity"] += value
+                        if score_round:
+                            case_counts[player]["score"] += value
+        percs = {
+            player: round(100 * stats["score"] / stats["opportunity"])
+            for player, stats in case_counts.items()
+        }
+        return self.order_by_value(percs, keys_only=False)
+
+    def impostor_kills_per_round(self):
+        case_counts = defaultdict(lambda: {"kills": 0.0, "rounds": 0})
+        for date, games in self.combined_summaries.items():
+            for game in games:
+                if "error" in game or len(game["impostors"]) != 2:
+                    continue
+                for impostor in game["impostors"]:
+                    case_counts[impostor]["rounds"] += 1
+                for meeting in game["meetings"]:
+                    impostors_alive = [player for player in game["impostors"] if player in meeting["alive"]]
+                    for impostor in impostors_alive:
+                        case_counts[impostor]["kills"] += (len(meeting["new_dead"]) / len(impostors_alive))
+        percs = {
+            player: round(stats["kills"] / stats["rounds"], 2)
+            for player, stats in case_counts.items() if stats["rounds"] > 0
+        }
+        return self.order_by_value(percs, keys_only=False)
+
+    def game_lengths(self):
+        lengths_by_outcome = defaultdict(lambda: {"total_time": 0, "round_count": 0, "longest": 0, "shortest": 9999999})
+        longest_game = {"date": "Apr-03", "round_num": 1, "length": 0}
+        shortest_game = {"date": "Apr-03", "round_num": 1, "length": 100000}
+        total_length = 0
+        number_of_rounds = 0
+        for date, games in self.combined_summaries.items():
+            for game_num in range(len(games)):
+                game = games[game_num]
+                if "error" in game or len(game["impostors"]) != 2:
+                    continue
+                number_of_rounds += 1
+                game_len = self.time_to_seconds(game["round_length"])
+                total_length += game_len
+                if game_len > longest_game["length"]:
+                    longest_game = {"date": date, "round_num": game_num + 1, "length": game_len}
+                if game_len < shortest_game["length"]:
+                    shortest_game = {"date": date, "round_num": game_num + 1, "length": game_len}
+                lengths_by_outcome[game["outcome"]]["round_count"] += 1
+                lengths_by_outcome[game["outcome"]]["total_time"] += game_len
+                if game_len > lengths_by_outcome[game["outcome"]]["longest"]:
+                    lengths_by_outcome[game["outcome"]]["longest"] = game_len
+                if game_len < lengths_by_outcome[game["outcome"]]["shortest"]:
+                    lengths_by_outcome[game["outcome"]]["shortest"] = game_len
+        print("Total recorded playtime: {}".format(self.seconds_to_time(total_length)))
+        print("Average game length: {}".format(self.seconds_to_time(total_length / number_of_rounds)))
+        print("Longest game: {} (round {} on {})".format(self.seconds_to_time(longest_game["length"]),
+                                                         longest_game["round_num"], longest_game["date"]))
+        print("Shortest game: {} (round {} on {})".format(self.seconds_to_time(shortest_game["length"]),
+                                                          shortest_game["round_num"], shortest_game["date"]))
+        lengths_by_outcome = {
+            outcome: {
+                "rounds": stats["round_count"],
+                "total_time": self.seconds_to_time(stats["total_time"]),
+                "shortest": self.seconds_to_time(stats["shortest"]),
+                "average": self.seconds_to_time(stats["total_time"] / stats["round_count"]),
+                "longest": self.seconds_to_time(stats["longest"])
+            } for outcome, stats in lengths_by_outcome.items()
+        }
+        print(json.dumps(lengths_by_outcome, indent=4))
+
+    def game_lengths_by_impostor(self):
+        case_counts = defaultdict(lambda: defaultdict(lambda: {"total_time": 0, "round_count": 0, "alive_time": 0}))
+        for date, games in self.combined_summaries.items():
+            for game in games:
+                if "error" in game or len(game["impostors"]) != 2:
+                    continue
+                impostor_win = "win" if game["outcome"][0] == "i" else "loss"
+                game_start_secs = self.time_to_seconds(game["round_start"])
+                for meeting in game["meetings"]:
+                    if meeting["outcome"] in game["impostors"]:
+                        game_length_so_far = self.time_to_seconds(meeting["end"]) - game_start_secs
+                        case_counts[meeting["outcome"]][impostor_win]["alive_time"] += game_length_so_far
+                game_len = self.time_to_seconds(game["round_length"])
+                for impostor in game["impostors"]:
+                    case_counts[impostor][impostor_win]["total_time"] += game_len
+                    case_counts[impostor][impostor_win]["round_count"] += 1
+                    if impostor in game["meetings"][-1]["alive"] and impostor != game["meetings"][-1]["outcome"]:
+                        case_counts[impostor][impostor_win]["alive_time"] += game_len
+        percs = defaultdict(dict)
+        for player, stats in case_counts.items():
+            for outcome in ["win", "loss"]:
+                num_rounds = stats[outcome]["round_count"]
+                if num_rounds > 0:
+                    avg_time = self.seconds_to_time(stats[outcome]["total_time"] / num_rounds)
+                    avg_alive_time = self.seconds_to_time(stats[outcome]["alive_time"] / num_rounds)
+                    percs[player][outcome] = "{} ({})".format(avg_time, avg_alive_time)
+            num_rounds = stats["win"]["round_count"] + stats["loss"]["round_count"]
+            avg_time = self.seconds_to_time((stats["win"]["total_time"] + stats["loss"]["total_time"]) / num_rounds)
+            avg_alive_time = self.seconds_to_time(
+                (stats["win"]["alive_time"] + stats["loss"]["alive_time"]) / num_rounds)
+            percs[player]["overall"] = "{} ({})".format(avg_time, avg_alive_time)
+        print(json.dumps(percs, indent=4))
+
     @staticmethod
-    def order_by_value(dictionary, field=None):
+    def order_by_value(dictionary, field=None, keys_only=True):
         if field is None:
-            return dict(sorted(dictionary.items(), key=lambda item: item[1], reverse=True)).keys()
+            sorted_dict = dict(sorted(dictionary.items(), key=lambda item: item[1], reverse=True))
         else:
-            return dict(sorted(dictionary.items(), key=lambda item: item[1][field], reverse=True)).keys()
+            sorted_dict = dict(sorted(dictionary.items(), key=lambda item: item[1][field], reverse=True))
+        if keys_only:
+            return sorted_dict.keys()
+        else:
+            return sorted_dict
+
+    @staticmethod
+    def time_to_seconds(time):
+        mins, secs = time.split(":")
+        return (int(mins) * 60) + int(secs)
+
+    @staticmethod
+    def seconds_to_time(full_secs):
+        time = full_secs
+        secs = int(time % 60)
+        time = (time - secs) / 60
+        mins = int(time % 60)
+        hours = int((time - mins) / 60)
+        if hours > 0:
+            components = [hours, mins, secs]
+        else:
+            components = [mins, secs]
+        return ":".join(["{:02d}".format(num) for num in components])
+
+
+if __name__ == '__main__':
+    print(StatCalculator.seconds_to_time(3600))
