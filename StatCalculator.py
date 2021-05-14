@@ -434,6 +434,50 @@ class StatCalculator:
             percs[player]["overall"] = "{} ({})".format(avg_time, avg_alive_time)
         print(json.dumps(percs, indent=4))
 
+    def game_lengths_by_crew(self):
+        case_counts = defaultdict(lambda: {"round_count": 0, "alive_time": 0})
+        total_time = 0
+        total_meeting_time = 0
+        round_count = 0
+        for date, games in self.combined_summaries.items():
+            for game in games:
+                if "error" in game or len(game["impostors"]) != 2:
+                    continue
+                total_time += self.time_to_seconds(game["round_length"])
+                round_count += 1
+                crew = [player for player in game["player_list"] if player not in game["impostors"]]
+                non_meeting_time = 0
+                for meeting_num in range(len(game["meetings"])):
+                    meeting = game["meetings"][meeting_num]
+                    total_meeting_time += self.time_to_seconds(meeting["meeting_length"])
+                    cooldown = 15 if meeting_num == 0 else 30
+                    play_length = self.time_to_seconds(meeting["play_length"]) - cooldown
+                    non_meeting_time += cooldown + (play_length / 2)
+                    new_dead = meeting["new_dead"]
+                    new_dead.append(meeting["outcome"])
+                    for player in new_dead:
+                        if player in crew:
+                            case_counts[player]["round_count"] += 1
+                            case_counts[player]["alive_time"] += non_meeting_time
+                    non_meeting_time += (play_length / 2)
+                # meeting variable is now final meeting
+                final_session_length = self.time_to_seconds(game["round_end"]) - self.time_to_seconds(meeting["end"])
+                live_crew_end = [player for player in meeting["alive"]
+                                 if player in crew and player != meeting["outcome"]]
+                for player in live_crew_end:
+                    case_counts[player]["round_count"] += 1
+                    case_counts[player]["alive_time"] += non_meeting_time + final_session_length
+        averages = {
+            player: self.seconds_to_time(stats["alive_time"] / stats["round_count"])
+            for player, stats in case_counts.items()
+        }
+        print("Average round time: {} with {} spent in meetings and {} running / floating around".format(
+            self.seconds_to_time(total_time / round_count),
+            self.seconds_to_time(total_meeting_time / round_count),
+            self.seconds_to_time((total_time - total_meeting_time) / round_count)
+        ))
+        print(json.dumps(self.order_by_value(averages, keys_only=False), indent=4))
+
     @staticmethod
     def order_by_value(dictionary, field=None, keys_only=True):
         if field is None:
