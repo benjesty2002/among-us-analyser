@@ -3,3 +3,11 @@
 /endgame.jpg
 /end.jpg
 /dropship.jpg
+__pycache__/*
+.idea/*
+venv/*
+.venv/*
+voting_screen_analyser_old/*
+*.bmp
+*.jpg
+*.zip

@@ -136,8 +136,14 @@ def combine_summaries(root_dir=r"F:\Videos\Among Us", ind_summary_filename="summ
 if __name__ == '__main__':
     # combine_summaries(ind_summary_filename="summary.json", combined_filename="all_summaries_colours.json")
 
+    # run_all()
+
     sc = StatCalculator()
-    print(json.dumps(sc.session_impostor_counts(), indent=4))
+    # sc.search_for_round(category="half_impostor_win")
+    sc.game_lengths_by_crew()
+    # sc.search_for_round(impostors=["Sean", "Eoin"])
+    # sc.voting_on_x(total_alive=7, impostors_alive=2)
+    # print(json.dumps(sc.impostor_kills_per_round(), indent=4))
 
     # se = SceneExtractor(round_num=1, date_str="Apr-03")
     # se.add_human_details()
